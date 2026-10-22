@@ -7,7 +7,7 @@ from pathlib import Path
 import subprocess
 import sys
 import time
-from desktop_audio import SUPPORTED_SPEAKERS, atomic_json, pulse, supported_speaker
+from desktop_audio import SUPPORTED_SPEAKERS, atomic_json, pulse, speaker_endpoint, supported_speaker
 
 ROOT = Path(__file__).resolve().parents[1]
 DATA = Path(os.environ.get("XDG_DATA_HOME", Path.home() / ".local/share")) / "nahimic-linux"
@@ -18,7 +18,7 @@ MARKER = "nahimic-linux-v1\n"
 
 def detect():
     sinks = json.loads(pulse("--format=json", "list", "sinks"))
-    matches = [s for s in sinks if supported_speaker(s)]
+    matches = [s for s in sinks if speaker_endpoint(s)]
     if len(matches) != 1:
         supported = "、".join(settings.split("_")[0] for settings in SUPPORTED_SPEAKERS.values())
         raise RuntimeError(f"未找到受支持的内置扬声器（{supported}）。请选择扬声器输出后重试。")
@@ -106,7 +106,8 @@ def serve():
         atomic_json(RUNTIME / "desktop-state.json", {"waiting_for_speakers": True})
         while not stopped:
             sinks = json.loads(pulse("--format=json", "list", "sinks"))
-            if any(s["name"] == target and supported_speaker(s) for s in sinks):
+            cards = json.loads(pulse("--format=json", "list", "cards"))
+            if any(s["name"] == target and supported_speaker(s, cards) for s in sinks):
                 break
             time.sleep(0.5)
         if stopped:

@@ -39,9 +39,53 @@ def device_settings(sink):
                  if prefix in components), None)
 
 
-def supported_speaker(sink):
+def speaker_endpoint(sink):
     return (device_settings(sink) is not None
             and sink.get("active_port") == "[Out] Speaker")
+
+
+def card_ports(card):
+    """Return (name, port) pairs for both pactl JSON shapes."""
+    ports = card.get("ports") or []
+    if isinstance(ports, dict):
+        return list(ports.items())
+    return [(port.get("name", ""), port) for port in ports]
+
+
+def card_for(sink, cards):
+    properties = sink.get("properties", {})
+    bus = properties.get("device.bus_path")
+    index = properties.get("alsa.card")
+    if bus:
+        for card in cards:
+            if card.get("properties", {}).get("device.bus_path") == bus:
+                return card
+    if index:
+        for card in cards:
+            if card.get("properties", {}).get("api.alsa.card") == index:
+                return card
+    return None
+
+
+def headphones_plugged(sink, cards):
+    """A headphone or headset output jack is physically connected.
+
+    ALSA auto-mute and shared codec pins can route playback to the headphone
+    output without changing the sink's active port, so the jack state on the
+    same card is authoritative. Effects must never reach that output.
+    """
+    card = card_for(sink, cards)
+    for name, port in card_ports(card if card is not None else sink):
+        if port.get("availability") != "available":
+            continue
+        kind = str(port.get("type", "")).lower()
+        if kind in ("headphone", "headphones") or (kind == "headset" and name.startswith("[Out]")):
+            return True
+    return False
+
+
+def supported_speaker(sink, cards):
+    return speaker_endpoint(sink) and not headphones_plugged(sink, cards)
 
 
 class DesktopAudio:
@@ -53,6 +97,9 @@ class DesktopAudio:
 
     def sinks(self):
         return {s["name"]: s for s in json.loads(pulse("--format=json", "list", "sinks"))}
+
+    def cards(self):
+        return json.loads(pulse("--format=json", "list", "cards"))
 
     def set_enabled(self, enabled):
         subprocess.run(["pw-metadata", "-n", "filters", str(self.node_id),
@@ -67,7 +114,7 @@ class DesktopAudio:
         enabled = preferences["enabled"]
         sinks = self.sinks()
         physical = sinks.get(self.target)
-        if physical is None or not supported_speaker(physical):
+        if physical is None or not supported_speaker(physical, self.cards()):
             raise OutputUnavailable("Waiting for the configured built-in speakers")
         virtual = sinks[self.sink]
         properties = virtual["properties"]

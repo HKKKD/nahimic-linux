@@ -7,7 +7,7 @@ import unittest
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'host'))
-from desktop_audio import DesktopAudio, OutputUnavailable, device_settings, supported_speaker
+from desktop_audio import DesktopAudio, OutputUnavailable, device_settings, headphones_plugged, supported_speaker
 from run_local import linked_channels
 
 
@@ -20,7 +20,17 @@ class RoutingTest(unittest.TestCase):
         self.physical = {'name': 'speaker', 'index': 10, 'description': 'Speaker',
                          'active_port': '[Out] Speaker', 'mute': False,
                          'volume': {ch: {'value': 32768} for ch in ('front-left', 'front-right')},
-                         'properties': {'alsa.components': 'HDA:14f11f87,1d05e022,00100100'}}
+                         'properties': {'alsa.components': 'HDA:14f11f87,1d05e022,00100100',
+                                        'device.bus_path': 'pci-0000:c1:00.6'}}
+        self.card = {'name': 'card', 'properties': {'device.bus_path': 'pci-0000:c1:00.6'},
+                     'ports': {
+                         '[Out] Speaker': {'name': '[Out] Speaker', 'type': 'Speaker',
+                                           'availability': 'availability unknown'},
+                         '[Out] Headphones': {'name': '[Out] Headphones', 'type': 'Headphones',
+                                              'availability': 'not available'},
+                         '[In] Headset': {'name': '[In] Headset', 'type': 'Headset',
+                                          'availability': 'available'}}}
+        self.cards = [self.card]
         self.virtual = {'name': 'effect', 'index': 20, 'properties': {
             'object.id': '30', 'filter.smart': 'true', 'monitor.channel-volumes': 'false',
             'filter.smart.target': json.dumps({'node.name': 'speaker'})}}
@@ -36,6 +46,8 @@ class RoutingTest(unittest.TestCase):
                 return json.dumps(self.sinks)
             if args == ('--format=json', 'list', 'sink-inputs'):
                 return json.dumps(self.streams)
+            if args == ('--format=json', 'list', 'cards'):
+                return json.dumps(self.cards)
             self.fail('Routing must not change defaults, stream targets or device volume: ' + str(args))
         self.pulse = patch('desktop_audio.pulse', side_effect=pulse)
         self.pulse.start()
@@ -84,18 +96,38 @@ class RoutingTest(unittest.TestCase):
         with self.assertRaises(OutputUnavailable): self.router.tick()
         self.run.assert_not_called()
 
+    def test_plugged_headphone_jack_stops_effects_even_when_speaker_port_stays_active(self):
+        # ALSA auto-mute can move playback to the headphone pin while the sink
+        # still reports [Out] Speaker and keeps the effects attached.
+        self.card['ports']['[Out] Headphones']['availability'] = 'available'
+        self.assertTrue(headphones_plugged(self.physical, self.cards))
+        self.assertFalse(supported_speaker(self.physical, self.cards))
+        with self.assertRaises(OutputUnavailable): self.router.tick()
+        self.run.assert_not_called()
+        self.card['ports']['[Out] Headphones']['availability'] = 'not available'
+        self.router.tick()
+
+    def test_headphone_jack_on_a_different_card_does_not_stop_effects(self):
+        usb = {'name': 'usb', 'properties': {'device.bus_path': 'usb-0000:00:14.0-1'},
+               'ports': {'[Out] Headphones': {'name': '[Out] Headphones', 'type': 'Headphones',
+                                              'availability': 'available'}}}
+        self.cards.append(usb)
+        self.assertTrue(supported_speaker(self.physical, self.cards))
+        self.router.tick()
+        self.assertTrue(json.loads((self.work / 'desktop-state.json').read_text())['active'])
+
     def test_each_verified_hardware_keeps_its_own_device_settings(self):
         alc256 = {'name': 'speaker', 'active_port': '[Out] Speaker',
                   'properties': {'alsa.components': 'HDA:10ec0256,1d05e004,00100002'}}
         self.assertEqual(device_settings(alc256), '1D05E004_InternalSpeakers.nsx')
-        self.assertTrue(supported_speaker(alc256))
+        self.assertTrue(supported_speaker(alc256, self.cards))
         alc256['active_port'] = '[Out] Headphones'
-        self.assertFalse(supported_speaker(alc256))
+        self.assertFalse(supported_speaker(alc256, self.cards))
         self.assertEqual(device_settings(self.physical), '1D05E022_Speakers.nsx')
         hdmi = {'active_port': '[Out] Speaker',
                 'properties': {'alsa.components': 'HDA:1002aa01,00aa0100,00100900'}}
         self.assertIsNone(device_settings(hdmi))
-        self.assertFalse(supported_speaker(hdmi))
+        self.assertFalse(supported_speaker(hdmi, self.cards))
 
     def test_invalid_target_properties_are_rejected(self):
         self.virtual['properties']['filter.smart.target'] = '{}'

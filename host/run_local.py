@@ -58,11 +58,12 @@ def main():
     exe, dll, original = (p.resolve(strict=True) for p in (args.exe, args.dll, args.settings))
     state_reader = (args.state_reader or exe.parent / 'pulse_state').resolve(strict=True)
     sinks = json.loads(subprocess.run(['pactl', '--format=json', 'list', 'sinks'], check=True, capture_output=True, text=True, timeout=10).stdout)
+    cards = json.loads(subprocess.run(['pactl', '--format=json', 'list', 'cards'], check=True, capture_output=True, text=True, timeout=10).stdout)
     matches = [s for s in sinks if s['name'] == args.target]
     if len(matches) != 1:
         raise OutputUnavailable('The configured speaker output is unavailable')
     target = matches[0]
-    if not supported_speaker(target):
+    if not supported_speaker(target, cards):
         raise RuntimeError('This launcher only runs on a supported built-in speaker endpoint')
     device_file = device_settings(target)
     dll_sha256 = hashlib.sha256(dll.read_bytes()).hexdigest()
@@ -205,7 +206,8 @@ def main():
         return 0
     except RuntimeError:
         current_sinks = json.loads(subprocess.run(['pactl', '--format=json', 'list', 'sinks'], check=True, capture_output=True, text=True, timeout=5).stdout)
-        if not any(s['name'] == args.target and supported_speaker(s) for s in current_sinks):
+        current_cards = json.loads(subprocess.run(['pactl', '--format=json', 'list', 'cards'], check=True, capture_output=True, text=True, timeout=5).stdout)
+        if not any(s['name'] == args.target and supported_speaker(s, current_cards) for s in current_sinks):
             success = True
             raise OutputUnavailable('Waiting for the configured built-in speakers') from None
         raise
